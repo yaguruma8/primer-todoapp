@@ -530,3 +530,178 @@ Todoアイテムの削除は、todoItemに`<button>`をつけて、`click`イベ
     this.emit('change')
   }
 ```
+# Todoアプリのリファクタリング
+
+現状ではApp.jsにHTML要素の作成処理が多く、見通しがあまり良くない。    
+`App.js`は本来、
+- Modelの初期化
+- HTML要素とModelのイベントの中継
+という役割なので、その役割に集中できるようにする。
+
+そのためにHTML要素の作成処理を`View`として分離する。
+
+## Viewコンポーネント
+HTML要素の作成は、
+- 各todoItem
+- todoItemをまとめるTodoList
+
+から成り立つので、この二つをそれぞれ、`TodoItemView`、`TodoListView`としてコンポーネント化する。
+
+todoアイテムの`<input type="checkbox">`の`change`イベント、`<button>`の`click`イベントは、発火した時に`TodoListModel`を変更するため、リスナー関数を`App`から渡すようにする。
+
+`src/view/TodoItemView.js`
+```js
+import { element } from './html-util.js';
+
+export class TodoItemView {
+  constructor() {}
+
+  createElement(item, { onUpdate, onDelete }) {
+    const todoItemElement = item.completed
+      ? element`
+      <li>
+        <input type="checkbox" class="checkbox" checked><s>${item.title}</s>
+        <button class="delete">X</button>
+      </li>`
+      : element`
+      <li>
+        <input type="checkbox" class="checkbox">${item.title}
+        <button class="delete">X</button>
+      </li>`;
+    // チェックボックスのリスナーを設定
+    const inputCheckboxElement = todoItemElement.querySelector('.checkbox');
+    inputCheckboxElement.addEventListener('change', () => {
+      // App -> TodoListView -> TodoItemView に渡されるリスナー関数を設定
+      onUpdate({
+        id: item.id,
+        completed: !item.completed,
+      });
+    });
+    // 削除ボタンのリスナーを設定
+    const deleteButtonElement = todoItemElement.querySelector('.delete');
+    deleteButtonElement.addEventListener('click', () => {
+      onDelete({ id: item.id });
+    });
+    return todoItemElement;
+  }
+}
+```
+
+`src/view/TodoListView.js`
+```js
+import { element } from './html-util.js';
+import { TodoItemView } from './TodoItemView.js';
+
+export class TodoListView {
+  constructor() {}
+
+  createElement(todoItems, { onUpdate, onDelete }) {
+    const todoListElement = element`<ul />`;
+    todoItems.forEach((item) => {
+      const todoItemView = new TodoItemView();
+      const todoItemElement = todoItemView.createElement(item, {
+        // App -> TodoListView に渡されて、TodoItemViewに渡すリスナー関数
+        onUpdate,
+        onDelete,
+      });
+      todoListElement.appendChild(todoItemElement);
+    });
+    return todoListElement;
+  }
+}
+```
+`src/App.js`
+```js
+// 省略
+    this._todoListModel.addEventListener('change', () => {
+      const todoListView = new TodoListView();
+      const todoListElement = todoListView.createElement(
+        this._todoListModel.getTodoItems(),
+        {
+          // App -> TodoListView -> TodoItemView と渡していくリスナー関数
+          onUpdate: ({ id, completed }) => {
+            this._todoListModel.updateTodo({ id, completed });
+          },
+          onDelete: ({ id }) => {
+            this._todoListModel.deleteTodo({ id });
+          },
+        }
+      );
+      render(todoListElement, containerElement);
+      todoItemCountElement.textContent = `Todoアイテム数: ${this._todoListModel.getTotalCount()}`;
+    });
+```
+
+
+## Appコンポーネントで管理されるイベントリスナー
+
+| no | イベントの流れ | リスナー関数 | 役割 |
+| - | - | - | - |
+| 1 | Model -> View | this._todoListModel.addEventListener('change') | TodoListModelのイベントを受けとって描画を更新 |
+| 2 | View -> Model | formElement.addEventListener('submit') | フォームから入力完了イベントを受け取る |
+| 3 | View -> Model | onUpdate | todoアイテムのチェックボックスのchangeイベントを受け取る |
+| 4 | View -> Model | onDelete | todoアイテムの削除ボタンのclickイベントを受け取る |
+
+(2)〜(4)はいずれもViewからModelを変更するためのリスナー関数    
+これらがTodoアプリの扱っている機能であることをわかりやすくするため、リスナー関数を`App`クラスのメソッドとして定義し直す。
+
+`src/App.js`
+```js
+export class App {
+  constructor() {
+    console.log('App initialized.');
+    this._todoListModel = new TodoListModel();
+  }
+  // アイテムの更新
+  handleUpdate({ id, completed }) {
+    this._todoListModel.updateTodo({ id, completed });
+  }
+  // アイテムの削除
+  handleDelete({ id }) {
+    this._todoListModel.deleteTodo({ id });
+  }
+  // アイテムの追加
+  handleAdd(title) {
+    this._todoListModel.addTodo(
+      new TodoItemModel({
+        title,
+        completed: false,
+      })
+    );
+  }
+
+  mount() {
+    const formElement = document.querySelector('#js-form');
+    const inputElement = document.querySelector('#js-form-input');
+    const containerElement = document.querySelector('#js-todo-list');
+    const todoItemCountElement = document.querySelector('#js-todo-count');
+
+    // TodoListModelをリッスンし、イベントが発火したら表示を更新する
+    this._todoListModel.addEventListener('change', () => {
+      const todoListView = new TodoListView();
+      const todoListElement = todoListView.createElement(
+        this._todoListModel.getTodoItems(),
+        {
+          onUpdate: ({ id, completed }) => {
+            this.handleUpdate({ id, completed });
+          },
+          onDelete: ({ id }) => {
+            this.handleDelete({ id });
+          },
+        }
+      );
+      // コンテナ要素にtodoList要素を追加する
+      render(todoListElement, containerElement);
+      // アイテム数の表示を更新する
+      todoItemCountElement.textContent = `Todoアイテム数: ${this._todoListModel.getTotalCount()}`;
+    });
+
+    // 入力formをリッスンし、イベントが発火したら新しいTodoItemModelを追加する
+    formElement.addEventListener('submit', (e) => {
+      e.preventDefault();
+      this.handleAdd(inputElement.value);
+      inputElement.value = '';
+    });
+  }
+}
+```
