@@ -169,7 +169,7 @@ export class App {
 }
 ```
 
-## 現在のディレクトリ構成
+## ここまでのディレクトリ構成
 ```
 .
 ├── index.html
@@ -247,6 +247,7 @@ DOM直接更新の場合、フォームの`submit`イベントが発火したら
 
 イベントの仕組みを持ったクラス`EventEmitter`を作成し、`TodoListModel`はそれを継承することによってイベントの機能を持たせる。
 
+`src/EventEmitter.js`
 ```js
 export class EventEmitter {
   constructor() {
@@ -384,4 +385,148 @@ export class App {
     });
   }
 }
+```
+
+## ここまでのディレクトリ構成
+```
+.
+├── index.html
+├── index.js
+└── src
+    ├── App.js
+    ├── EventEmitter.js
+    ├── model
+    │   ├── TodoItemModel.js
+    │   └── TodoListModel.js
+    └── view
+        └── html-util.js
+```
+
+# Todoアイテムの更新と削除を実装する
+
+## Todoアイテムの更新
+
+Todoアイテムの更新はTodoアイテムに`<input type="checkbox">`をつけて、
+- checked属性あり : 完了(todoItem.completed = true)
+- checked属性なし : 未完了(todoItem.completed = false)
+
+とする。
+
+### 実装
+
+- チェックボックスの`change`イベントをリッスンするイベントリスナーを設定する
+  - チェックボックスをクリックした時`change`イベントが発火される
+- チェックボックスのイベントが発火したら該当するidの`TodoItemModel`の`completed`を変更する
+  - `TodoListModel`から操作する
+- `TodoListModel` `TodoItemModel`の更新が完了したら自分自身に`change`イベントを発火させる
+- `TodoListModel`のイベントが発火したら表示を更新する
+
+`src/App.js`
+```js
+// 省略
+    // TodoListModelをリッスンし、イベントが発火したら表示を更新する
+    this._todoListModel.addEventListener('change', () => {
+      const todoListElement = element`<ul />`;
+      const todoItems = this._todoListModel.getTodoItems();
+      todoItems.forEach((item) => {
+        // completedの状態によって表示を変更する
+        const todoItemElement = item.completed
+          ? element`<li><input type="checkbox" class="checkbox" checked><s>${item.title}</s></li>`
+          : element`<li><input type="checkbox" class="checkbox">${item.title}</li>`;
+        // アイテムのチェックボックスを取得してリスナーを設定する
+        const inputCheckboxElement = todoItemElement.querySelector('.checkbox');
+        inputCheckboxElement.addEventListener('change', () => {
+          // チェックの付け外し＝completedの状態が反転 idと一緒に渡してTodoListModelの状態を変更する
+          this._todoListModel.updateTodo({
+            id: item.id,
+            completed: !item.completed,
+          });
+        });
+        todoListElement.appendChild(todoItemElement);
+      });
+      // コンテナ要素にtodoList要素を追加する
+      render(todoListElement, containerElement);
+      // アイテム数の表示を更新する
+      todoItemCountElement.textContent = `Todoアイテム数: ${this._todoListModel.getTotalCount()}`;
+    });
+```
+
+`src/model/TodoListModel.js`
+```js
+// 省略
+  updateTodo({ id, completed }) {
+    // 指定したidのtodoItemを抽出
+    const todoItem = this._items.find((todo) => todo.id === id);
+    // todoItemが存在しない場合
+    if (!todoItem) {
+      return;
+    }
+    // completedを変更したら`change`イベントを発火させる
+    todoItem.completed = completed;
+    this.emit('change');
+  }
+```
+
+## Todoアイテムの削除
+
+Todoアイテムの削除は、todoItemに`<button>`をつけて、`click`イベントが発火したらそのアイテムを削除するようにする。
+
+### 実装
+
+- `<button>`要素の`click`イベントをリッスンするイベントリスナーを設定する
+- `click`イベントが発火したら該当するidの`TodoItemModel`を`TodoListModel`のitemsから取り除く
+- `TodoListModel`は自分の更新が終わったら`change`イベントを発火させる
+- `TodoListModel`のイベントが発火したら表示を更新する
+
+`src/App.js`
+```js
+// 省略
+    // TodoListModelをリッスンし、イベントが発火したら表示を更新する
+    this._todoListModel.addEventListener('change', () => {
+      const todoListElement = element`<ul />`;
+      const todoItems = this._todoListModel.getTodoItems();
+      todoItems.forEach((item) => {
+        const todoItemElement = item.completed
+          ? element`
+            <li>
+              <input type="checkbox" class="checkbox" checked><s>${item.title}</s>
+              <button class="delete">X</button>
+            </li>`
+          : element`
+            <li>
+              <input type="checkbox" class="checkbox">${item.title}
+              <button class="delete">X</button>
+            </li>`;
+        // アイテムの更新のリスナー
+        const inputCheckboxElement = todoItemElement.querySelector('.checkbox');
+        inputCheckboxElement.addEventListener('change', () => {
+          this._todoListModel.updateTodo({
+            id: item.id,
+            completed: !item.completed,
+          });
+        });
+        // アイテムの削除のリスナー
+        const deleteButtonElement = todoItemElement.querySelector('.delete');
+        // クリックしたらTodoListModelから該当するidのtodoItemを削除するメソッドを呼ぶ
+        deleteButtonElement.addEventListener('click', () => {
+          this._todoListModel.deleteTodo({ id: item.id });
+        });
+        
+        todoListElement.appendChild(todoItemElement);
+      });
+      // コンテナ要素にtodoList要素を追加する
+      render(todoListElement, containerElement);
+      // アイテム数の表示を更新する
+      todoItemCountElement.textContent = `Todoアイテム数: ${this._todoListModel.getTotalCount()}`;
+    });
+```
+
+`src/model/TodoListModel.js
+```js
+  deleteTodo({ id }) {
+    // 指定のid以外のtodoItemをフィルター＝指定のidを外す
+    // 操作が終了したら`change`イベントを発火させる
+    this._items = this._items.filter((todo) => todo.id !== id);
+    this.emit('change')
+  }
 ```
